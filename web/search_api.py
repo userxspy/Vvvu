@@ -2,6 +2,7 @@ from aiohttp import web
 import time
 from database.ia_filterdb import get_web_search_results
 from utils import temp, get_size
+from info import BIN_CHANNEL
 
 search_routes = web.RouteTableDef()
 
@@ -37,18 +38,48 @@ async def api_search_handler(request):
     
     results = []
     for doc in docs:
-        # file_ref असली Telegram ID है जिससे वेब सर्वर सीधे स्ट्रीम कर सकता है
+        # असली फाइल आईडी निकालें
         target_id = doc.get("file_ref", doc.get("file_id"))
         
+        # ✅ FIX: अब सीधे watch/download पर भेजने के बजाय ब्रिज (setup_stream) पर भेजेंगे
         results.append({
             "name": doc.get("file_name", "Unknown File"),
             "size": get_size(doc.get("file_size", 0)),
             "type": doc.get("file_type", "document").upper(),
-            "watch": f"/watch/{target_id}",
-            "download": f"/download/{target_id}"
+            "watch": f"/setup_stream?file_id={target_id}&mode=watch",
+            "download": f"/setup_stream?file_id={target_id}&mode=download"
         })
         
     return web.json_response(results)
+
+# ─────────────────────────────────────────────
+# 🌉 STREAM BRIDGE (NEW) - फाइल को BIN में भेजकर असली ID निकालेगा
+# ─────────────────────────────────────────────
+@search_routes.get('/setup_stream')
+async def setup_stream_handler(request):
+    if not is_admin_logged_in(request):
+        return web.Response(text="❌ Unauthorized Access!", status=403)
+        
+    file_id = request.query.get('file_id')
+    mode = request.query.get('mode', 'watch')
+    
+    if not file_id:
+        return web.Response(text="Invalid Request", status=400)
+        
+    try:
+        # बॉट फाइल को BIN_CHANNEL में भेजकर Message ID जनरेट करेगा
+        msg = await temp.BOT.send_cached_media(chat_id=BIN_CHANNEL, file_id=file_id)
+        
+        # असली स्ट्रीमिंग URL पर तुरंत रीडायरेक्ट (Redirect) करें
+        if mode == 'download':
+            raise web.HTTPFound(f"/download/{msg.id}")
+        else:
+            raise web.HTTPFound(f"/watch/{msg.id}")
+            
+    except web.HTTPFound:
+        raise  # यह लाइन रीडायरेक्ट को काम करने देती है
+    except Exception as e:
+        return web.Response(text=f"❌ Error generating stream link: {str(e)}", status=500)
 
 # ─────────────────────────────────────────────
 # 🎬 FRONTEND UI (WEB PLAYER & SEARCH)
