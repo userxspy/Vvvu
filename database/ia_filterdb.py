@@ -83,6 +83,7 @@ async def save_file(media, collection_type="primary"):
 
         doc = {
             "_id":       file_id,     
+            "file_ref":  media.file_id, # ✅ ADDED: Direct Web Streaming के लिए असली File ID
             "file_name": f_name,
             "file_size": media.file_size,
             "caption":   caption,
@@ -122,7 +123,6 @@ def _build_regex(query: str):
 
 # ─────────────────────────────────────────────────────────
 # 🔍 SINGLE COLLECTION SEARCH (INTERNAL)
-# ✅ BUG FIX: Language filter को सीधे Database क्वेरी में डाला गया है
 # ─────────────────────────────────────────────────────────
 async def _search(col, regex, offset: int, limit: int, lang=None):
     if USE_CAPTION_FILTER:
@@ -130,10 +130,8 @@ async def _search(col, regex, offset: int, limit: int, lang=None):
     else:
         flt = {"file_name": regex}
 
-    # 🛠 FIX 1: Language Filter MongoDB के अंदर ही एप्लाई होगा
     if lang:
         lang_regex = re.compile(lang, re.IGNORECASE)
-        # यह सुनिश्चित करेगा कि फाइल नेम में क्वेरी (regex) और भाषा (lang) दोनों हों
         flt = {"$and": [flt, {"file_name": lang_regex}]}
 
     try:
@@ -177,7 +175,6 @@ async def get_search_results(
     if collection_type == "all":
         cascade = [("primary", primary), ("cloud", cloud), ("archive", archive)]
         for src, col in cascade:
-            # 🛠 lang वेरिएबल को _search फंक्शन में पास किया गया
             docs, cnt = await _search(col, regex, offset, max_results, lang)
             if docs:
                 results    = docs
@@ -198,13 +195,39 @@ async def get_search_results(
         results   = docs
         total     = cnt
 
-    # 🛠 FIX: Python का लैंग्वेज फ़िल्टर यहाँ से हटा दिया गया है 
-    # क्योंकि अब डेटाबेस खुद छँटी हुई (filtered) फाइल्स भेज रहा है।
-
     next_offset = offset + max_results
     next_offset = "" if next_offset >= total else next_offset
 
     return results, next_offset, total, actual_src
+
+# ─────────────────────────────────────────────────────────
+# 🌐 WEB API SEARCH (For Web Dashboard / OTT UI)
+# ✅ NEW: यह वेब ब्राउज़र को सीधे JSON डेटा देने के लिए है
+# ─────────────────────────────────────────────────────────
+async def get_web_search_results(query, offset=0, limit=20):
+    if not query:
+        return []
+        
+    regex = _build_regex(str(query))
+    flt = {"file_name": regex}
+    
+    results = []
+    try:
+        # यह सभी कलेक्शन्स से डेटा उठाकर एक साथ वेब को भेज देगा
+        for col in [primary, cloud, archive]:
+            cursor = col.find(flt).skip(offset).limit(limit)
+            docs = await cursor.to_list(length=limit)
+            for doc in docs:
+                doc["file_id"] = doc["_id"]
+                results.append(doc)
+                
+            if len(results) >= limit:
+                break
+                
+        return results[:limit]
+    except Exception as e:
+        logger.error(f"Web Search Error: {e}")
+        return []
 
 # ─────────────────────────────────────────────────────────
 # 🗑 DELETE FILES
