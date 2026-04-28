@@ -1,6 +1,7 @@
 import os
 import random
 import asyncio
+import uuid  # ✅ वेब टोकन जनरेट करने के लिए
 from datetime import datetime
 from time import time as time_now
 from hydrogram import Client, filters, enums
@@ -271,6 +272,41 @@ async def link_generator(client, message):
         
     except Exception as e:
         await msg.edit_text(f"❌ **Error generating link:** `{e}`")
+
+# ─────────────────────────
+# ✅ /web COMMAND (MAGIC LINK GENERATOR)
+# ─────────────────────────
+@Client.on_message(filters.command("web") & filters.user(ADMINS))
+async def web_admin_link(client, message):
+    # यूज़र से टाइम लें, अगर न दे तो डिफ़ॉल्ट 15 मिनट सेट करें
+    try:
+        minutes = int(message.command[1]) if len(message.command) > 1 else 15
+    except ValueError:
+        minutes = 15
+
+    # 1. एक यूनीक रैंडम टोकन बनाएँ
+    token = str(uuid.uuid4())
+    
+    # 2. एक्सपायरी टाइम कैलकुलेट करें
+    expiry_time = time_now() + (minutes * 60)
+
+    # 3. टोकन को temp मेमोरी में सेव करें
+    if not hasattr(temp, 'ADMIN_TOKENS'):
+        temp.ADMIN_TOKENS = {}
+        
+    temp.ADMIN_TOKENS[token] = expiry_time
+
+    # 4. लिंक तैयार करें
+    # (ध्यान दें: URL के अंत में स्लैश (/) होना चाहिए, जो आमतौर पर info.py में सेट होता है)
+    magic_link = f"{URL}admin?token={token}"
+
+    await message.reply(
+        f"🔐 **Admin Web Panel Link Generated!**\n\n"
+        f"🔗 **Link:** {magic_link}\n"
+        f"⏳ **Expires in:** {minutes} minutes\n\n"
+        f"⚠️ *Do not share this link with anyone!*",
+        disable_web_page_preview=True
+    )
 
 # ─────────────────────────
 # CALLBACKS
