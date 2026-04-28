@@ -26,6 +26,8 @@ class temp(object):
     U_NAME = None
     B_NAME = None
     SETTINGS = {}
+    ADMIN_TOKENS = {}
+    ADMIN_SESSIONS = {}
     FILES = {}
     USERS_CANCEL = False
     GROUPS_CANCEL = False
