@@ -9,20 +9,13 @@ from hydrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 admin_routes = web.RouteTableDef()
 
-# ─────────────────────────────────────────────
-# 🔒 AUTH HELPERS
-# ─────────────────────────────────────────────
 def is_logged_in(request):
     session_id = request.cookies.get('admin_session')
     if not hasattr(temp, 'ADMIN_SESSIONS'): return False
     return session_id in temp.ADMIN_SESSIONS and time.time() < temp.ADMIN_SESSIONS[session_id]
 
-# ─────────────────────────────────────────────
-# 🔑 LOGIN & API LOGIC
-# ─────────────────────────────────────────────
 @admin_routes.get('/admin')
 async def login_page(request):
-    # टोकन सिस्टम हटा दिया गया है, सीधे लॉगिन फॉर्म खुलेगा
     html = f"""
     <html><head><meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
@@ -42,24 +35,17 @@ async def login_post(request):
     if data.get('user') == ADMIN_USERNAME and data.get('pass') == ADMIN_PASSWORD:
         session_id = str(uuid.uuid4())
         if not hasattr(temp, 'ADMIN_SESSIONS'): temp.ADMIN_SESSIONS = {}
-        
-        # ⏱️ 1 Hour Limit (3600 seconds)
         temp.ADMIN_SESSIONS[session_id] = time.time() + 3600
-        
         res = web.HTTPFound('/dashboard')
         res.set_cookie('admin_session', session_id, max_age=3600)
-        
-        # 🛑 Telegram Alert & Disconnect Button
         try:
             btn = [[InlineKeyboardButton("🛑 Disconnect Web Session", callback_data=f"logout_{session_id}")]]
             await temp.BOT.send_message(
                 chat_id=ADMINS[0], 
-                text="✅ **Web Login Detected!**\n\nYour session is active for 1 hour. If this wasn't you, disconnect immediately.",
+                text="✅ **Web Login Detected!**\n\nYour session is active for 1 hour.",
                 reply_markup=InlineKeyboardMarkup(btn)
             )
-        except Exception as e:
-            print(f"Login Alert Error: {e}")
-
+        except: pass
         return res
     return web.Response(text="<html><body style='background:#0f0f1a;color:red;text-align:center;padding:50px;'><h2>❌ Wrong Credentials!</h2><a href='/admin' style='color:white;'>Try Again</a></body></html>", content_type='text/html')
 
@@ -83,13 +69,11 @@ async def delete_file_api(request):
         if res.deleted_count > 0: return web.json_response({"status": "success"})
     return web.json_response({"status": "fail"})
 
-# ─────────────────────────────────────────────
-# 📊 SMART DASHBOARD UI
-# ─────────────────────────────────────────────
 @admin_routes.get('/dashboard')
 async def admin_dashboard(request):
     if not is_logged_in(request): return web.HTTPFound('/admin')
     stats = await db_count_documents()
+    total_u = await user_db.total_users_count()
 
     html = f"""
     <!DOCTYPE html><html><head>
@@ -100,22 +84,26 @@ async def admin_dashboard(request):
         body {{ font-family: 'Segoe UI', sans-serif; background: #0f0f1a; color: white; margin: 0; padding: 15px; }}
         .container {{ max-width: 800px; margin: auto; }}
         .header {{ text-align: center; margin-bottom: 25px; background: #1a1a2e; padding: 20px; border-radius: 15px; }}
-        .search-box {{ display: flex; gap: 10px; margin-bottom: 20px; }}
-        .search-box input {{ flex: 1; padding: 15px 20px; border-radius: 30px; border: 1px solid #333; background: #16213e; color: white; outline: none; }}
+        
+        /* SEARCH BOX WITH DROPDOWN */
+        .search-box {{ display: flex; gap: 5px; margin-bottom: 20px; flex-wrap: wrap; }}
+        .search-box select {{ padding: 12px; border-radius: 30px; border: 1px solid #333; background: #16213e; color: #00d2ff; outline: none; font-weight: bold; cursor: pointer; }}
+        .search-box input {{ flex: 1; min-width: 200px; padding: 15px 20px; border-radius: 30px; border: 1px solid #333; background: #16213e; color: white; outline: none; }}
         .search-box button {{ padding: 12px 25px; border-radius: 30px; border: none; background: #00d2ff; color: #0f0f1a; font-weight: bold; cursor: pointer; }}
         
         #results-info {{ color: #00d2ff; font-weight: bold; margin-bottom: 15px; display: none; text-align: center; }}
         
-        /* 📱 CARD LOOK LIKE PHOTO */
-        .card {{ background: #1a1a2e; padding: 20px; border-radius: 15px; margin-bottom: 15px; box-shadow: 0 5px 15px rgba(0,0,0,0.2); border-left: 4px solid #00d2ff; }}
-        .card-title {{ font-weight: bold; margin-bottom: 8px; font-size: 16px; line-height: 1.4; }}
+        .card {{ background: #1a1a2e; padding: 20px; border-radius: 15px; margin-bottom: 15px; box-shadow: 0 5px 15px rgba(0,0,0,0.2); border-left: 4px solid #00d2ff; position: relative; }}
+        .card-title {{ font-weight: bold; margin-bottom: 8px; font-size: 16px; line-height: 1.4; word-break: break-all; padding-right: 50px; }}
         .card-meta {{ font-size: 13px; color: #a0a0b0; margin-bottom: 15px; }}
+        
+        /* COLLECTION BADGE (Primary/Cloud/Archive) */
+        .source-badge {{ position: absolute; top: 15px; right: 15px; background: #3a3a5e; color: #00d2ff; padding: 3px 8px; border-radius: 5px; font-size: 11px; font-weight: bold; }}
         
         .btn-group {{ display: flex; gap: 10px; }}
         .btn-play {{ flex: 1; background: #28a745; color: white; text-align: center; padding: 10px; border-radius: 8px; text-decoration: none; font-weight: bold; }}
         
-        /* ⚙️ SMART ACTION BUTTON */
-        .btn-action {{ background: #3a3a5e; color: white; padding: 10px 15px; border-radius: 8px; cursor: pointer; border: none; position: relative; }}
+        .btn-action {{ background: #3a3a5e; color: white; padding: 10px 15px; border-radius: 8px; cursor: pointer; border: none; }}
         .dropdown {{ display: none; position: absolute; right: 0; top: 45px; background: white; border-radius: 8px; min-width: 120px; box-shadow: 0 5px 20px rgba(0,0,0,0.5); z-index: 10; }}
         .dropdown button {{ display: block; width: 100%; padding: 12px; border: none; background: none; text-align: left; cursor: pointer; font-size: 14px; color: #333; }}
         .dropdown button:hover {{ background: #f0f0f0; }}
@@ -126,17 +114,23 @@ async def admin_dashboard(request):
         
         #editModal {{ display: none; position: fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.8); justify-content: center; align-items: center; z-index: 100; }}
         .modal-content {{ background: white; padding: 25px; border-radius: 12px; width: 90%; max-width: 400px; color: #333; }}
-        .modal-content input {{ width: 100%; padding: 12px; margin: 15px 0; border: 1px solid #ddd; border-radius: 8px; }}
+        .modal-content input {{ width: 100%; padding: 12px; margin: 15px 0; border: 1px solid #ddd; border-radius: 8px; box-sizing: border-box; }}
     </style>
     </head><body>
     
     <div class="container">
         <div class="header">
             <h1>🍿 Admin Control</h1>
-            <p>Total Files: <b>{stats['total']}</b></p>
+            <p>Total Files: <b>{stats['total']}</b> | Users: <b>{total_u}</b></p>
         </div>
 
         <div class="search-box">
+            <select id="colSelect">
+                <option value="all">🌍 All</option>
+                <option value="primary">📁 Primary</option>
+                <option value="cloud">☁️ Cloud</option>
+                <option value="archive">📦 Archive</option>
+            </select>
             <input type="text" id="q" placeholder="Search file name...">
             <button onclick="search(0)">Search</button>
         </div>
@@ -161,13 +155,15 @@ async def admin_dashboard(request):
     </div></div>
 
     <script>
-    let curQ = "", curOff = 0, nextOff = "";
+    let curQ = "", curOff = 0, nextOff = "", curCol = "all";
 
     async function search(off) {{
         let q = document.getElementById('q').value;
+        let col = document.getElementById('colSelect').value;
         if(!q) return;
-        curQ = q; curOff = off;
-        let res = await fetch(`/api/search?q=${{encodeURIComponent(q)}}&offset=${{off}}`);
+        
+        curQ = q; curOff = off; curCol = col;
+        let res = await fetch(`/api/search?q=${{encodeURIComponent(q)}}&offset=${{off}}&col=${{col}}`);
         let data = await res.json();
         
         document.getElementById('results-info').style.display = 'block';
@@ -178,7 +174,7 @@ async def admin_dashboard(request):
             let fid = f.watch.split('file_id=')[1].split('&')[0];
             out += `
             <div class="card" id="row-${{fid}}">
-                <div class="card-title">${{f.name}}</div>
+                <span class="source-badge">${{f.source}}</span> <div class="card-title">${{f.name}}</div>
                 <div class="card-meta">💾 ${{f.size}} | 📁 ${{f.type}}</div>
                 <div class="btn-group">
                     <a href="${{f.watch}}" target="_blank" class="btn-play">▶️ Play</a>
@@ -192,7 +188,7 @@ async def admin_dashboard(request):
                 </div>
             </div>`;
         }});
-        document.getElementById('results').innerHTML = out || "Not Found";
+        document.getElementById('results').innerHTML = out || "<h3 style='text-align:center;'>❌ No Files Found in this collection.</h3>";
         
         nextOff = data.next_offset;
         document.getElementById('page-box').style.display = 'flex';
@@ -229,6 +225,7 @@ async def admin_dashboard(request):
         if((await res.json()).status === 'success') {{ document.getElementById('row-'+id).remove(); }}
     }}
 
+    // पेज बदलते वक्त वही कलेक्शन याद रखेगा
     function next() {{ if(nextOff) search(nextOff); window.scrollTo(0,0); }}
     function prev() {{ search(Math.max(0, curOff-20)); window.scrollTo(0,0); }}
     </script>
