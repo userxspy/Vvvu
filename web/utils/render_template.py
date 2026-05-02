@@ -188,9 +188,8 @@ watch_tmplt = """
 <body>
 
     <div class="navbar">
-        <div class="logo">
-  NETFLIX
-</div>
+        <div class="logo">Fast <span style="font-size: 0.8rem; color:white; font-weight:400;">Finder</span></div>
+    </div>
 
     <div class="hero-container">
         
