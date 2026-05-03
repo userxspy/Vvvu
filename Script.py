@@ -22,16 +22,16 @@ class script(object):
 
     STATUS_TXT = """📊 <b>Bot Statistics</b>
 
-👥 <b>Total Users:</b> <code>{}</code>
-👥 <b>Total Groups:</b> <code>{}</code>
-💎 <b>Premium Users:</b> <code>{}</code>
+🦹 <b>Total Users:</b> <code>{}</code>
+👫 <b>Total Groups:</b> <code>{}</code>
+💰 <b>Premium Users:</b> <code>{}</code>
 
-📁 <b>Total Files:</b> <code>{}</code>
- • 📁 Primary: <code>{}</code>
+🗂️ <b>Total Files:</b> <code>{}</code>
+ • ⚡ Primary: <code>{}</code>
  • ☁️ Cloud: <code>{}</code>
- • 📦 Archive: <code>{}</code>
+ • ♻️ Archive: <code>{}</code>
 
-⏱ <b>Bot Uptime:</b> <code>{}</code>"""
+⏰ <b>Uptime:</b> <code>{}</code>"""
 
     NEW_GROUP_TXT = """#NewGroup
 Title - {}
