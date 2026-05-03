@@ -35,7 +35,7 @@ COLLECTIONS = {
 }
 
 # ─────────────────────────────────────────────────────────
-# ⚡ INDEXES — Text index (sorting के लिए)
+# ⚡ INDEXES — Text index (Superfast searching के लिए)
 # ─────────────────────────────────────────────────────────
 async def ensure_indexes():
     for name, col in COLLECTIONS.items():
@@ -44,7 +44,7 @@ async def ensure_indexes():
                 [("file_name", "text"), ("caption", "text")],
                 name=f"{name}_text"
             )
-            logger.info(f"✅ Index OK: {name}")
+            logger.info(f"✅ Text Index OK: {name}")
         except Exception as e:
             if "already exists" in str(e) or "IndexKeySpecsConflict" in str(e) or "86" in str(e):
                 pass
@@ -83,7 +83,7 @@ async def save_file(media, collection_type="primary"):
 
         doc = {
             "_id":       file_id,     
-            "file_ref":  media.file_id, # ✅ ADDED: Direct Web Streaming के लिए असली File ID
+            "file_ref":  media.file_id, 
             "file_name": f_name,
             "file_size": media.file_size,
             "caption":   caption,
@@ -105,7 +105,7 @@ async def save_file(media, collection_type="primary"):
         return "err"
 
 # ─────────────────────────────────────────────────────────
-# 🔍 REGEX BUILDER
+# 🔍 REGEX BUILDER (Fallback के लिए)
 # ─────────────────────────────────────────────────────────
 def _build_regex(query: str):
     query = query.strip()
@@ -122,51 +122,61 @@ def _build_regex(query: str):
         return re.compile(re.escape(query), flags=re.IGNORECASE)
 
 # ─────────────────────────────────────────────────────────
-# 🔍 SINGLE COLLECTION SEARCH (INTERNAL)
+# 🚀 SMART SEARCH (HYBRID: TEXT INDEX + REGEX)
 # ─────────────────────────────────────────────────────────
-async def _search(col, regex, offset: int, limit: int, lang=None):
-    if USE_CAPTION_FILTER:
-        flt = {"$or": [{"file_name": regex}, {"caption": regex}]}
-    else:
-        flt = {"file_name": regex}
-
+async def _search(col, raw_query: str, regex, offset: int, limit: int, lang=None):
+    
+    # 1. ⚡ सुपरफास्ट Text Search (पूरे शब्दों के लिए)
+    text_flt = {"$text": {"$search": raw_query}}
     if lang:
         lang_regex = re.compile(lang, re.IGNORECASE)
-        flt = {"$and": [flt, {"file_name": lang_regex}]}
+        text_flt = {"$and": [text_flt, {"file_name": lang_regex}]}
 
-    try:
-        async def _fetch():
-            cursor = col.find(flt)
+    count = await col.count_documents(text_flt)
+    
+    if count > 0:
+        # अगर इंडेक्स से रिज़ल्ट मिला, तो सबसे अच्छी मैचिंग (Relevance Score) को ऊपर रखो
+        async def _fetch_text():
+            cursor = col.find(text_flt, {"score": {"$meta": "textScore"}})
+            cursor.sort([("score", {"$meta": "textScore"})])
             cursor.skip(offset).limit(limit)
             docs = await cursor.to_list(length=limit)
             for doc in docs:
-                doc["file_id"] = doc["_id"]  
+                doc["file_id"] = doc["_id"]
             return docs
+        return await _fetch_text(), count
 
-        async def _count():
-            return await col.count_documents(flt)
+    # 2. 🐢 Fallback to Regex (अगर यूज़र ने आधा शब्द लिखा हो, जैसे "Aveng")
+    if USE_CAPTION_FILTER:
+        reg_flt = {"$or": [{"file_name": regex}, {"caption": regex}]}
+    else:
+        reg_flt = {"file_name": regex}
 
-        docs, count = await asyncio.gather(_fetch(), _count())
-        return docs, count
+    if lang:
+        lang_regex = re.compile(lang, re.IGNORECASE)
+        reg_flt = {"$and": [reg_flt, {"file_name": lang_regex}]}
 
-    except Exception as e:
-        logger.error(f"_search error: {e}")
-        return [], 0
+    async def _fetch_reg():
+        cursor = col.find(reg_flt).sort('_id', -1)
+        cursor.skip(offset).limit(limit)
+        docs = await cursor.to_list(length=limit)
+        for doc in docs:
+            doc["file_id"] = doc["_id"]
+        return docs
+
+    count = await col.count_documents(reg_flt)
+    docs = await _fetch_reg()
+    return docs, count
 
 # ─────────────────────────────────────────────────────────
-# 🚀 PUBLIC SEARCH API — TRUE CASCADE
+# 🌐 PUBLIC SEARCH API
 # ─────────────────────────────────────────────────────────
-async def get_search_results(
-    query,
-    max_results=MAX_BTN,
-    offset=0,
-    lang=None,
-    collection_type="primary"
-):
+async def get_search_results(query, max_results=MAX_BTN, offset=0, lang=None, collection_type="primary"):
     if not query:
         return [], "", 0, collection_type
 
-    regex      = _build_regex(str(query))
+    raw_query  = str(query).strip()
+    regex      = _build_regex(raw_query)
     results    = []
     total      = 0
     actual_src = collection_type
@@ -175,7 +185,7 @@ async def get_search_results(
     if collection_type == "all":
         cascade = [("primary", primary), ("cloud", cloud), ("archive", archive)]
         for src, col in cascade:
-            docs, cnt = await _search(col, regex, offset, max_results, lang)
+            docs, cnt = await _search(col, raw_query, regex, offset, max_results, lang)
             if docs:
                 results    = docs
                 total      = cnt
@@ -185,13 +195,13 @@ async def get_search_results(
     # ── Single collection ──
     elif collection_type in COLLECTIONS:
         col       = COLLECTIONS[collection_type]
-        docs, cnt = await _search(col, regex, offset, max_results, lang)
+        docs, cnt = await _search(col, raw_query, regex, offset, max_results, lang)
         results   = docs
         total     = cnt
 
     # ── Unknown → Primary default ──
     else:
-        docs, cnt = await _search(primary, regex, offset, max_results, lang)
+        docs, cnt = await _search(primary, raw_query, regex, offset, max_results, lang)
         results   = docs
         total     = cnt
 
@@ -201,21 +211,28 @@ async def get_search_results(
     return results, next_offset, total, actual_src
 
 # ─────────────────────────────────────────────────────────
-# 🌐 WEB API SEARCH (For Web Dashboard / OTT UI)
-# ✅ NEW: यह वेब ब्राउज़र को सीधे JSON डेटा देने के लिए है
+# 💻 WEB API SEARCH (For Web Dashboard)
 # ─────────────────────────────────────────────────────────
 async def get_web_search_results(query, offset=0, limit=20):
     if not query:
         return []
         
-    regex = _build_regex(str(query))
-    flt = {"file_name": regex}
+    raw_query = str(query).strip()
+    regex = _build_regex(raw_query)
+    text_flt = {"$text": {"$search": raw_query}}
+    reg_flt = {"file_name": regex}
     
     results = []
     try:
-        # यह सभी कलेक्शन्स से डेटा उठाकर एक साथ वेब को भेज देगा
         for col in [primary, cloud, archive]:
-            cursor = col.find(flt).skip(offset).limit(limit)
+            count = await col.count_documents(text_flt)
+            
+            if count > 0:
+                cursor = col.find(text_flt, {"score": {"$meta": "textScore"}}).sort([("score", {"$meta": "textScore"})])
+            else:
+                cursor = col.find(reg_flt).sort('_id', -1)
+                
+            cursor.skip(offset).limit(limit)
             docs = await cursor.to_list(length=limit)
             for doc in docs:
                 doc["file_id"] = doc["_id"]
