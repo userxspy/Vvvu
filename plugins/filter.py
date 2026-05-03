@@ -5,7 +5,7 @@ import random
 from hydrogram import Client, filters, enums
 from hydrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-from info import ADMINS, DELETE_TIME, MAX_BTN, IS_PREMIUM, PICS
+from info import ADMINS, DELETE_TIME, MAX_BTN, IS_PREMIUM, PICS, IS_STREAM
 from utils import is_premium, get_size, is_check_admin, temp, get_settings, save_group_settings
 from database.ia_filterdb import get_search_results
 
@@ -15,9 +15,7 @@ from database.ia_filterdb import get_search_results
 BUTTONS = {}
 
 def check_cache_limit():
-    """Koyeb RAM Saver: Clears oldest 100 cache items instead of all"""
     if len(BUTTONS) > 500:
-        # सिर्फ शुरुआत के (सबसे पुराने) 100 आइटम्स हटाएँ
         keys_to_delete = list(BUTTONS.keys())[:100]
         for k in keys_to_delete:
             BUTTONS.pop(k, None)
@@ -29,18 +27,14 @@ def check_cache_limit():
 async def is_valid_search(message):
     if not message.text or message.text.startswith("/"):
         return False
-    
     if message.forward_date or message.photo or message.video or message.document:
         return False
-        
     if message.entities:
         for entity in message.entities:
             if entity.type in [enums.MessageEntityType.URL, enums.MessageEntityType.TEXT_LINK]:
                 return False
-                
     if not any(c.isalnum() for c in message.text):
         return False
-        
     return True
 
 # ─────────────────────────────────────────────
@@ -86,12 +80,10 @@ async def group_search(client, message):
     if "@admin" in text_lower:
         if await is_check_admin(client, chat_id, user_id):
             return
-        
         mentions = []
         async for m in client.get_chat_administrators(chat_id):
             if not m.user.is_bot:
                 mentions.append(f"<a href='tg://user?id={m.user.id}'>\u2063</a>")
-        
         await message.reply(f"✅ Report sent to admins!{''.join(mentions)}")
         return
 
@@ -115,20 +107,17 @@ async def group_search(client, message):
 async def search_toggle(client, message):
     if not await is_check_admin(client, message.chat.id, message.from_user.id):
         return
-
     if len(message.command) < 2:
         return await message.reply("Usage: `/search on` or `/search off`")
 
     action = message.command[1].lower()
     state = True if action == "on" else False
-    
     await save_group_settings(message.chat.id, "search_enabled", state)
     await message.reply(f"✅ Search is now **{'ENABLED' if state else 'DISABLED'}**")
 
 # ─────────────────────────────────────────────
 # 🚀 AUTO FILTER CORE
 # ─────────────────────────────────────────────
-# ⚡ Helper dictionaries for shorter callback data
 SRC_TO_SHORT = {"primary": "pri", "cloud": "cld", "archive": "arc"}
 SHORT_TO_SRC = {"pri": "primary", "cld": "cloud", "arc": "archive"}
 
@@ -146,8 +135,7 @@ async def auto_filter(client, msg, collection_type="all"):
             m = await msg.reply(f"❌ No results for <b>{search}</b>", quote=True)
             await asyncio.sleep(5)
             await m.delete()
-        except:
-            pass
+        except: pass
         return
 
     key = f"{msg.chat.id}-{msg.id}"
@@ -173,13 +161,15 @@ async def auto_filter(client, msg, collection_type="all"):
     )
 
     btn = []
-    nav = [InlineKeyboardButton(f"📄 1/{total_pages}", callback_data="pages")]
-    
     act_src_short = SRC_TO_SHORT.get(actual_source, "pri")
     
-    if next_offset:
-        nav.append(InlineKeyboardButton("Next »", callback_data=f"nav_{msg.from_user.id}_{key}_{next_offset}_{act_src_short}"))
-    btn.append(nav)
+    if total <= MAX_BTN:
+        btn.append([InlineKeyboardButton("📤 Send All", callback_data=f"sendall_{msg.from_user.id}_{key}_{act_src_short}")])
+    else:
+        nav = [InlineKeyboardButton(f"📄 1/{total_pages}", callback_data="pages")]
+        if next_offset:
+            nav.append(InlineKeyboardButton("Next »", callback_data=f"nav_{msg.from_user.id}_{key}_{next_offset}_{act_src_short}"))
+        btn.append(nav)
 
     col_btn = []
     for c in ["primary", "cloud", "archive"]:
@@ -188,12 +178,10 @@ async def auto_filter(client, msg, collection_type="all"):
         col_btn.append(InlineKeyboardButton(f"{tick} {c.title()}", callback_data=f"coll_{msg.from_user.id}_{key}_{c_short}"))
     btn.append(col_btn)
 
-    # ✅ FIX: Close button with user ID
     btn.append([InlineKeyboardButton("❌ Close", callback_data=f"close_{msg.from_user.id}")])
 
     try:
         m = await msg.reply(cap, reply_markup=InlineKeyboardMarkup(btn), disable_web_page_preview=True, quote=True)
-        
         settings = await get_settings(msg.chat.id)
         if settings.get("auto_delete"):
             asyncio.create_task(auto_delete_msg(m, msg))
@@ -206,6 +194,59 @@ async def auto_delete_msg(bot_msg, user_msg):
     except: pass
     try: await user_msg.delete()
     except: pass
+
+# ─────────────────────────────────────────────
+# 📤 SEND ALL HANDLER (With Stream Buttons)
+# ─────────────────────────────────────────────
+@Client.on_callback_query(filters.regex(r"^sendall_"))
+async def send_all_handler(client, query):
+    try:
+        _, req, key, coll_short = query.data.split("_", 3)
+        if int(req) != query.from_user.id:
+            return await query.answer("❌ This is not your search!", show_alert=True)
+    except:
+        return await query.answer("❌ Error!", show_alert=True)
+
+    if IS_PREMIUM and not await is_premium(query.from_user.id, client):
+        return await query.answer("❌ Premium Expired!", show_alert=True)
+
+    files = temp.FILES.get(key)
+    if not files:
+        return await query.answer("❌ Search Expired! Search again.", show_alert=True)
+
+    await query.answer("📤 Sending files to your PM...", show_alert=False)
+
+    try:
+        await client.send_message(query.from_user.id, f"<b>📥 All files for your search:</b>")
+        for file in files:
+            target_id = file.get("file_ref") or file.get("file_id")
+            if not target_id or str(target_id).strip() == 'None':
+                continue
+            
+            cap_template = '{file_name}\n\n💾 Size: {file_size}'
+            caption = cap_template.replace('{file_name}', str(file.get('file_name', 'File')))\
+                                  .replace('{file_size}', get_size(file.get('file_size', 0)))
+            
+            # ✅ Watch/Download Button Logic
+            btn = [[InlineKeyboardButton('❌ Close', callback_data=f'close_{query.from_user.id}')]]
+            if IS_STREAM:
+                btn.insert(0, [InlineKeyboardButton("▶️ Watch / Download", callback_data=f"stream#{target_id}")])
+            
+            await client.send_cached_media(
+                chat_id=query.from_user.id,
+                file_id=target_id,
+                caption=caption,
+                reply_markup=InlineKeyboardMarkup(btn)
+            )
+            await asyncio.sleep(0.5) 
+            
+    except Exception as e:
+        if "USER_IS_BLOCKED" in str(e) or "PEER_ID_INVALID" in str(e):
+            await query.message.reply(
+                f"❌ <a href='tg://user?id={query.from_user.id}'>User</a>, please start me in PM first to receive files!\n\n👉 t.me/{getattr(temp, 'U_NAME', 'bot')}?start=start", 
+                disable_web_page_preview=True
+            )
+        print(f"Send All Error: {e}")
 
 # ─────────────────────────────────────────────
 # 🔁 NAVIGATION HANDLER
@@ -327,12 +368,15 @@ async def coll_handler(client, query):
     )
 
     btn = []
-    nav = [InlineKeyboardButton(f"📄 1/{total_pages}", callback_data="pages")]
     act_src_short = SRC_TO_SHORT.get(act_src, "pri")
 
-    if next_off:
-        nav.append(InlineKeyboardButton("Next »", callback_data=f"nav_{req}_{key}_{next_off}_{act_src_short}"))
-    btn.append(nav)
+    if total <= MAX_BTN:
+        btn.append([InlineKeyboardButton("📤 Send All", callback_data=f"sendall_{req}_{key}_{act_src_short}")])
+    else:
+        nav = [InlineKeyboardButton(f"📄 1/{total_pages}", callback_data="pages")]
+        if next_off:
+            nav.append(InlineKeyboardButton("Next »", callback_data=f"nav_{req}_{key}_{next_off}_{act_src_short}"))
+        btn.append(nav)
 
     col_btn = []
     for c in ["primary", "cloud", "archive"]:
@@ -349,7 +393,6 @@ async def coll_handler(client, query):
         pass
     await query.answer()
 
-# ✅ FIX: Secure Close Button (Only searcher can close)
 @Client.on_callback_query(filters.regex(r"^close_"))
 async def close_cb(c, q):
     try:
